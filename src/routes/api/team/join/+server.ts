@@ -11,17 +11,24 @@ let indexDataLoaded = false;
 
 export const POST: RequestHandler = async ({ request, cookies, locals }) => {
     if (!indexDataLoaded) {
-        const data = (await indexRef.get()).data();
-        existingTeamCodes = new Map(Object.entries(data.teamcodes));
-        existingTeamMembers = new Map(Object.entries(data.teamcounts));
+        const doc = await indexRef.get();
+        if (doc.exists) {
+            const data = doc.data();
+            if (data) {
+                existingTeamCodes = new Map(Object.entries(data.teamcodes || {}));
+                existingTeamMembers = new Map(Object.entries(data.teamcounts || {}));
+            }
+        }
         indexRef.onSnapshot((snap) => {
             const snapData = snap.data();
-            existingTeamCodes = new Map(Object.entries(snapData.teamcodes));
-            existingTeamMembers = new Map(Object.entries(snapData.teamcounts));
+            if (snapData) {
+                existingTeamCodes = new Map(Object.entries(snapData.teamcodes || {}));
+                existingTeamMembers = new Map(Object.entries(snapData.teamcounts || {}));
+            }
         });
         indexDataLoaded = true
     }
-    
+
     if (locals.userID === null || !locals.userExists) {
         return error(401, 'Unauthorized');
     }
@@ -77,10 +84,10 @@ export const POST: RequestHandler = async ({ request, cookies, locals }) => {
         //index
         let userIndexData = {};
         userIndexData[locals.userID] = teamID
-        await transaction.update(userIndexRef, userIndexData);
+        await transaction.set(userIndexRef, userIndexData, { merge: true });
         let indexData = {};
         indexData[`teamcounts.${inviteCode}`] = FieldValue.arrayUnion(locals.userID)
-        await transaction.update(indexRef, indexData);
+        await transaction.set(indexRef, indexData, { merge: true });
         locals.userTeam = teamID;
         return json({ success: true, teamID });
     });
