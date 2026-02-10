@@ -10,66 +10,73 @@ export const POST: RequestHandler = async ({ locals }) => {
     }
 
     try {
-        const indexRef = adminDB.collection('index').doc('nameIndex');
-        const doc = await indexRef.get();
+        // MIGRATION STRATEGY:
+        // 1. Migrate all teams to 'teamNames' collection
+        // 2. Migrate all users to 'usernames' collection
+        // This ensures the new scalable schema is populated from existing data
 
-        if (!doc.exists) {
-            return json({ message: 'No nameIndex found. Nothing to migrate.' });
+        const results = {
+            teams: 0,
+            users: 0,
+            errors: [] as string[]
+        };
+
+        // PART 1: Migrate Teams to 'teamNames' collection
+        try {
+            const teamsSnapshot = await adminDB.collection('teams').get();
+            const teamBatch = adminDB.batch();
+
+            teamsSnapshot.forEach(doc => {
+                const teamData = doc.data();
+                const name = teamData.teamName;
+                const id = doc.id;
+
+                if (name) {
+                    const nameRef = adminDB.collection('teamNames').doc(name);
+                    teamBatch.set(nameRef, {
+                        teamId: id,
+                        migrated: true,
+                        migratedAt: new Date()
+                    }, { merge: true }); // Merge so we don't overwrite if already exists
+                    results.teams++;
+                }
+            });
+
+            await teamBatch.commit();
+        } catch (err: any) {
+            results.errors.push(`Team migration error: ${err.message}`);
         }
 
-        const data = doc.data();
-        const teamNames = data?.teamnames || []; // Array of strings
-        // Also teamcodes map might be useful if we wanted to backfill IDs, 
-        // but 'teamnames' array in nameIndex usually just strings. 
-        // Wait, the new schema uses teamNames/{name} -> { teamId, createdAt }
-        // The old 'teamnames' array implies we know the name, but do we know the ID?
-        // In the old schema:
-        // 'teamnames' was just an array of names.
-        // 'teamcodes' was a map of code -> ID.
-        // 'teamcounts' was code -> members.
-        // We DON'T easily know Name -> ID mapping from nameIndex alone, unless we scan all teams?
-        // OR does nameIndex have a map?
-        // Looking at Step 11 (original create):
-        // data3.teamnames = arrayUnion(teamName)
-        // It does NOT store name->ID map in `nameIndex`.
+        // PART 2: Migrate Users to 'usernames' collection
+        try {
+            const usersSnapshot = await adminDB.collection('users').get();
+            const userBatch = adminDB.batch();
 
-        // PROBLEM: We want to populate `teamNames/{name}` with `{ teamId: ... }`.
-        // If we don't have the ID, we can't fully backfill the reference.
-        // BUT, for *uniqueness check*, we only need the document `teamNames/{name}` to EXIST.
-        // The ID is useful metadata but not strictly required for the "Is Taken?" check.
-        // So we can create the doc with `{ migrated: true }` or try to find the ID if possible.
+            usersSnapshot.forEach(doc => {
+                const userData = doc.data();
+                const username = userData.username;
+                const uid = doc.id;
 
-        // BETTER MIGRATION: 
-        // Scan the `teams` collection directly.
-        // For each team doc, get `teamName` and `uid`.
-        // Write to `teamNames/{teamName}`.
-        // This is more robust and correct than using the index.
+                if (username) {
+                    const usernameRef = adminDB.collection('usernames').doc(username);
+                    userBatch.set(usernameRef, {
+                        uid: uid,
+                        migrated: true,
+                        migratedAt: new Date()
+                    }, { merge: true }); // Merge so we don't overwrite if already exists
+                    results.users++;
+                }
+            });
 
-        const teamsSnapshot = await adminDB.collection('teams').get();
-        const batch = adminDB.batch();
-        let count = 0;
-
-        teamsSnapshot.forEach(doc => {
-            const teamData = doc.data();
-            const name = teamData.teamName;
-            const id = doc.id;
-
-            if (name) {
-                const nameRef = adminDB.collection('teamNames').doc(name);
-                batch.set(nameRef, {
-                    teamId: id,
-                    migrated: true,
-                    migratedAt: new Date()
-                }, { merge: true }); // Merge so we don't overwrite if already exists
-                count++;
-            }
-        });
-
-        await batch.commit();
+            await userBatch.commit();
+        } catch (err: any) {
+            results.errors.push(`User migration error: ${err.message}`);
+        }
 
         return json({
-            success: true,
-            message: `Migrated ${count} teams to 'teamNames' collection.`
+            success: results.errors.length === 0,
+            message: `Migrated ${results.teams} teams to 'teamNames' collection and ${results.users} users to 'usernames' collection.`,
+            details: results
         });
 
     } catch (err: any) {

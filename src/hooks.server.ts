@@ -9,32 +9,24 @@ Sentry.init({
     tracesSampleRate: 1
 })
 
-let createdUserDataIndex = new Map<string, string>();
 let bannedTeams = new Set<string>();
-let indexLoaded = false;
-const indexRef = adminDB.collection("index").doc('userIndex');
+let bannedTeamsLoaded = false;
 const bannedTeamsQuery = adminDB.collection("teams").where("banned", "==", true);
+
 export const handle = sequence(Sentry.sentryHandle(), (async ({ event, resolve }) => {
     const sessionCookie = event.cookies.get("__session");
-    if (!indexLoaded) {
-        const doc = await indexRef.get();
+
+    // Load banned teams cache on first request
+    if (!bannedTeamsLoaded) {
         const qSnap = await bannedTeamsQuery.get();
         qSnap.docs.forEach((e) => bannedTeams.add(e.id));
-        if (doc.exists) {
-            const data = doc.data();
-            if (data !== undefined) {
-                createdUserDataIndex = new Map<string, string>(Object.entries(data));
-            }
-        }
-        indexRef.onSnapshot((snap) => {
-            const snapData = snap.data();
-            if (snapData !== undefined) createdUserDataIndex = new Map<string, string>(Object.entries(snapData));
-        });
+
+        // Listen for changes to banned teams
         bannedTeamsQuery.onSnapshot((snap) => {
             bannedTeams.clear();
             snap.docs.forEach((e) => bannedTeams.add(e.id));
         });
-        indexLoaded = true;
+        bannedTeamsLoaded = true;
     }
 
     try {
@@ -44,32 +36,27 @@ export const handle = sequence(Sentry.sentryHandle(), (async ({ event, resolve }
             event.locals.userTeam = null;
             return resolve(event);
         }
+
         const decodedClaims = await adminAuth.verifySessionCookie(sessionCookie!);
         event.locals.userID = decodedClaims.uid;
-        if (createdUserDataIndex.has(event.locals.userID)) {
+
+        // Query user document directly (no more userIndex caching)
+        const docRef = adminDB.collection('users').doc(event.locals.userID);
+        const doc = await docRef.get();
+
+        if (doc.exists) {
+            const data = doc.data();
+            const team = data?.team;
             event.locals.userExists = true;
-            event.locals.userTeam = createdUserDataIndex.get(event.locals.userID) || null;
-            event.locals.banned = event.locals.userTeam ? bannedTeams.has(event.locals.userTeam) : false;
-
-            return resolve(event);
+            event.locals.userTeam = team;
+            event.locals.banned = team ? bannedTeams.has(team) : false;
         } else {
-            const docRef = adminDB.collection('users').doc(event.locals.userID);
-            const doc = await docRef.get();
-            if (doc.exists) {
-                const data = doc.data();
-                const team = data?.team;
-                createdUserDataIndex.set(event.locals.userID, team);
-                event.locals.userExists = true;
-                event.locals.userTeam = team;
-                event.locals.banned = bannedTeams.has(team);
-
-            } else {
-                event.locals.userExists = false;
-                event.locals.userTeam = null;
-                event.locals.banned = false;
-            }
-            return resolve(event);
+            event.locals.userExists = false;
+            event.locals.userTeam = null;
+            event.locals.banned = false;
         }
+
+        return resolve(event);
     } catch (e) {
         console.error(e);
         event.locals.userID = null;

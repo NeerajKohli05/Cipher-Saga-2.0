@@ -31,24 +31,24 @@ export const POST: RequestHandler = async ({ request, cookies, locals }: any) =>
         await adminDB.runTransaction(async (transaction) => {
             const userRef = adminDB.collection('users').doc(locals.userID!);
             const teamRef = adminDB.collection("teams").doc(locals.userTeam!);
-            // Original nameIndexRef and userIndexRef are now declared inside their respective blocks
-            // const nameIndexRef = adminDB.collection('index').doc('nameIndex');
-            // const userIndexRef = adminDB.collection('index').doc('userIndex');
 
             const teamData = (await transaction.get(teamRef)).data();
             if (!(now <= startTime) && !isAdmin) return error(405, "Method Not Allowed");
             if (teamData === undefined) return error(404, "Not Found");
+
             let newMembers = teamData.members.filter((e: string) => e !== locals.userID);
+
             if (newMembers.length === 0) {
-                await transaction.delete(teamRef);
-                const nameIndexRef = adminDB.collection('nameIndex').doc('index');
-                const nameIndexDoc = await transaction.get(nameIndexRef);
-                let nameIndexData: Record<string, any> = nameIndexDoc.data() || { teamnames: {}, teamcodes: {}, teamcounts: {} };
-                nameIndexData.teamnames = FieldValue.arrayRemove(teamData.teamName);
-                nameIndexData[`teamcodes.${teamData.code}`] = FieldValue.delete();
-                nameIndexData[`teamcounts.${teamData.code}`] = FieldValue.delete();
-                await transaction.update(nameIndexRef, nameIndexData)
+                // Last member leaving - delete team and release the team name
+                transaction.delete(teamRef);
+
+                // Delete from teamNames collection to release the name
+                const teamNameRef = adminDB.collection('teamNames').doc(teamData.teamName);
+                transaction.delete(teamNameRef);
+
+                // NO UPDATES TO 'nameIndex' - Legacy schema removed
             } else {
+                // Other members remain - update team
                 let data = {
                     owner: newMembers[0],
                     members: newMembers,
@@ -61,19 +61,17 @@ export const POST: RequestHandler = async ({ request, cookies, locals }: any) =>
                         break;
                     }
                 }
-                await transaction.update(teamRef, data);
-                const nameIndexRef = adminDB.collection('nameIndex').doc('index');
-                let nameIndexData: Record<string, any> = {}
-                nameIndexData[`teamcounts.${teamData.code}`] = newMembers.length; // Changed to length as per common usage for counts
-                await transaction.update(nameIndexRef, nameIndexData);
+                transaction.update(teamRef, data);
+
+                // NO UPDATES TO 'nameIndex' - Legacy schema removed
             }
-            await transaction.update(userRef, {
+
+            // Update user to remove team reference
+            transaction.update(userRef, {
                 team: null,
             });
-            const userIndexRef = adminDB.collection('userIndex').doc('index');
-            let userIndexData: Record<string, any> = {};
-            userIndexData[locals.userID] = null
-            await transaction.update(userIndexRef, userIndexData);
+
+            // NO UPDATES TO 'userIndex' - Legacy schema removed
         });
         return json({ success: true, message: "Successfully left the team" }, { status: 200 });
     }

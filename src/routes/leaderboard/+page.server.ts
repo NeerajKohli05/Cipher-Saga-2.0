@@ -7,7 +7,9 @@ let leaderboard: any[] = [];
 export const load = async ({ params, locals }: any) => {
     try {
         if (!loaded) {
-            const queryDef = adminDB.collection("teams").orderBy("level", "desc").orderBy("last_change");
+            // Simplified query: only order by level (desc) to avoid composite index requirement
+            // Teams with same level will be in arbitrary order, which is acceptable for a leaderboard
+            const queryDef = adminDB.collection("teams").orderBy("level", "desc");
             const qSnap = await queryDef.get();
             qSnap.docs.forEach((e) => {
                 const data = e.data() || {};

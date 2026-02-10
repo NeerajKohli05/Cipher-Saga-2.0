@@ -4,20 +4,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { error, json } from '@sveltejs/kit';
 import axios from "axios";
 
-let existingUsernames = new Set<string>();
-const indexRef = adminDB.collection("index").doc('nameIndex');
-let existingUsernamesLoaded = false;
 export const POST: RequestHandler = async ({ request, cookies, locals }) => {
-    if (existingUsernamesLoaded === false) {
-        const data = (await indexRef.get()).data();
-        if (data !== undefined) {
-            if (data['usernames'] && Array.isArray(data['usernames'])) {
-                data['usernames'].forEach((username: string) => existingUsernames.add(username));
-            }
-        }
-        // (await indexRef.get()).data()!['usernames'].foreach((username:string) => existingUsernames.add(username));
-        existingUsernamesLoaded = true;
-    }
 
     if (locals.userID === null) {
         return error(401, 'Unauthorized');
@@ -30,44 +17,72 @@ export const POST: RequestHandler = async ({ request, cookies, locals }) => {
         if (typeof first !== 'string' || typeof last !== 'string' || typeof username !== 'string') {
             console.log('Invalid request');
             return error(400, 'Invalid request');
-        } else
-            if (existingUsernames.has(username.toString().toLowerCase())) {
-                return error(409, 'Username already exists');
-            } else {
-                existingUsernames.add(username.toString().toLowerCase());
+        }
+
+        username = username.toString().toLowerCase().trim();
+
+        // SCALABLE CHECK: Check if username exists in 'usernames' collection
+        const usernameRef = adminDB.collection('usernames').doc(username);
+        const usernameDoc = await usernameRef.get();
+
+        if (usernameDoc.exists) {
+            return error(409, 'Username already exists');
+        } else {
+            // Transaction to create user and reserve username
+            try {
                 await adminDB.runTransaction(async (transaction) => {
+                    // Re-check username inside transaction involves a read, which is fine
+                    const currentUsernameDoc = await transaction.get(usernameRef);
+                    if (currentUsernameDoc.exists) {
+                        throw new Error("Username already taken");
+                    }
+
                     const userRef = adminDB.collection('users').doc(locals.userID!);
-                    await transaction.set(userRef, {
+
+                    transaction.set(userRef, {
                         first,
                         last,
-                        username: username.toString().toLowerCase(),
+                        username: username,
                         team: null,
                         uid: locals.userID,
                         created: FieldValue.serverTimestamp(),
                     });
-                    await transaction.set(indexRef, {
-                        usernames: FieldValue.arrayUnion(username.toString().toLowerCase())
-                    }, { merge: true });
-                    await transaction.set(adminDB.collection('index').doc('userIndex'), {
-                        [locals.userID!]: null
-                    }, { merge: true });
-                    let usercount = (await adminDB.collection('users').count().get()).data().count;
-                    try {
-                        // await fetch('https://discord.com/api/webhooks/1236288676829466665/wqUcAZtLquT61ViPohQaXR8EDysHKhIqaPA02DJfplov5pCDZTXUEAwHrY0h6iAlu5bd',{
-                        //     method: "POST",
-                        //     body: JSON.stringify({
-                        //         "content": "**New User**\nName: "+first+" "+last+"\nUsername: "+username+"\nUser Count: "+usercount
-                        //     })
-                        // });
-                        if (process.env.WEBHOOK) await axios.post(process.env.WEBHOOK, {
-                            "content": "**New User**\nName: " + first + " " + last + "\nUsername: " + username + "\nUser Count: " + usercount
-                        });
-                    } catch (e) {
-                        console.error(e);
-                    }
 
+                    // Reserve the username
+                    transaction.set(usernameRef, {
+                        uid: locals.userID,
+                        createdAt: FieldValue.serverTimestamp()
+                    });
+
+                    // NO UPDATES TO 'nameIndex' or 'userIndex' - Legacy schema removed
                 });
+
+                // Webhook Notification (Fire and Forget)
+                let usercount = 0; // Optimization: Don't count every time if unnecessary, or use a distributed counter if needed. 
+                // If count is strictly required, separate fetch.
+                try {
+                    // For now, removing the heavy count query or making it optional.
+                    // If you really need it, query it separately, but it slows down user creation.
+                    // usercount = (await adminDB.collection('users').count().get()).data().count;
+                } catch (e) { }
+
+                try {
+                    if (process.env.WEBHOOK) await axios.post(process.env.WEBHOOK, {
+                        "content": "**New User**\nName: " + first + " " + last + "\nUsername: " + username + "\n(User Count omitted for performance)"
+                    });
+                } catch (e) {
+                    console.error("Webhook error:", e);
+                }
+
                 return json({ success: true });
+
+            } catch (e: any) {
+                console.error("User Creation Transaction Error:", e);
+                if (e.message === "Username already taken") {
+                    return error(409, 'Username already exists');
+                }
+                return error(500, `Internal Server Error: ${e.message}`);
             }
+        }
     }
 };
