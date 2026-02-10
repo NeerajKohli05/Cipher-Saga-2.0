@@ -11,8 +11,10 @@
         ArrowUpRight,
     } from "lucide-svelte";
     import { Doc } from "sveltefire";
-    import Coin from "@tabler/icons-svelte/IconCoin.svelte";
-    import Affiliate from "@tabler/icons-svelte/IconAffiliate.svelte";
+    import {
+        IconCoin as Coin,
+        IconAffiliate as Affiliate,
+    } from "@tabler/icons-svelte";
     import { Input } from "@/components/ui/SignupForm";
     import { sendErrorToast, sendSuccessToast } from "@/toast_utils";
     import { onMount } from "svelte";
