@@ -1,29 +1,11 @@
-import type { RequestHandler } from '../$types';
+import type { RequestHandler } from '@sveltejs/kit';
 import { adminDB, adminAuth } from '$lib/server/admin';
 import { FieldValue } from 'firebase-admin/firestore';
 import * as referralCodes from 'referral-codes';
 import { error, json } from '@sveltejs/kit';
 import axios from "axios";
-let existingTeamNames = new Set<string>();
-let existingTeamCodes = new Map();
-const indexRef = adminDB.collection("index").doc('nameIndex');
-const userIndexRef = adminDB.collection("index").doc("userIndex");
-let indexData = false;
 
-export const POST: RequestHandler = async ({ request, cookies, locals }) => {
-    if (!indexData) {
-        const doc = await indexRef.get();
-        if (doc.exists) {
-            const data = doc.data();
-            if (data) {
-                if (data.teamnames && Array.isArray(data.teamnames)) {
-                    data.teamnames.forEach((e: string) => existingTeamNames.add(e));
-                }
-                existingTeamCodes = data.teamcodes || {};
-            }
-        }
-        indexData = true; // Make sure to set this to true so we don't retry every time if it was successful (or partial)
-    }
+export const POST: RequestHandler = async ({ request, cookies, locals }: any) => {
 
     if (locals.userID === null || !locals.userExists || locals.userTeam !== null) {
         return error(401, 'Unauthorized');
@@ -33,36 +15,42 @@ export const POST: RequestHandler = async ({ request, cookies, locals }) => {
     let { teamName } = body;
     if (teamName === undefined || teamName === null || teamName.trim() === "") return error(400, "Bad Request");
     teamName = teamName.toLowerCase();
-    if (existingTeamNames.has(teamName)) return error(429, "Team name is already taken");
+
+    // NEW SCHALABILITY PATTERN:
+    // 1. Check if teamName is taken by trying to create a document in 'teamNames' collection.
+    // We do this inside the transaction or check beforehand.
+    // To minimize transaction contention, we can check beforehand (read), but must strict verify in transaction (create).
+
     try {
         await adminDB.runTransaction(async (transaction) => {
+            // 1. Uniqueness Check for Name
+            // We use a dedicated collection 'teamNames' where docID = teamName
+            const nameRef = adminDB.collection('teamNames').doc(teamName);
+            const nameDoc = await transaction.get(nameRef);
+            if (nameDoc.exists) {
+                throw new Error("Team name is already taken");
+            }
+
+            // 2. Generate Unique Team Code
+            // We can't easily check global uniqueness without a query or a big map.
+            // But with 8 chars, collision is rare.
+            // We'll generate one, query if it exists. If it does, fail (client retries) or we retry here.
+            // In a transaction, queries are allowed.
+            let teamCode = referralCodes.generate({ length: 8, count: 1 })[0].toLowerCase();
+
+            // Query to see if this code is taken.
+            // Note: In high traffic, 'count()' or index checks are better.
+            const codeQuery = await adminDB.collection('teams').where('code', '==', teamCode).limit(1).get();
+            if (!codeQuery.empty) {
+                // Collision! Abort current transaction to be safe or try generating another?
+                // Transactions should be fast. Let's just fail and let client/frontend retry (or simple recursion).
+                // Probability is low enough (`26+10`^8) that we can just throw.
+                throw new Error("Collision detected, please try again");
+            }
+
             const newTeamRef = adminDB.collection('teams').doc();
             const userRef = adminDB.collection('users').doc(locals.userID!);
             const teamID = newTeamRef.id;
-            let teamCode = referralCodes.generate({
-                length: 8,
-                count: 1
-            })[0].toLowerCase();
-
-            // Safety check
-            let attempts = 0;
-            // Use Map .has() if we converted it, OR use Object check if we keep it Object.
-            // Let's coerce to Object for checking if we didn't fully refactor the load logic yet, 
-            // BUT simpler is to assume 'existingTeamCodes' is treated as Object in the load logic (line 20).
-            // Line 20 says: existingTeamCodes = data.teamcodes; (which is Object from Firestore).
-            // So treating it as Object is correct for the current load logic.
-            // The issue might be line 20 failing if teamcodes is missing?
-            // Or 'referralCodes' generating something bad?
-
-            // Let's stick to Object access for now to match Line 20, but make it robust.
-            while (attempts < 100 && existingTeamCodes[teamCode] !== undefined) {
-                teamCode = referralCodes.generate({
-                    length: 8,
-                    count: 1,
-                })[0].toLowerCase();
-                attempts++;
-            }
-            if (attempts >= 100) throw new Error("Failed to generate unique team code");
 
             const teamMembers = [locals.userID,];
             const userRecord = await adminAuth.getUser(locals.userID!);
@@ -76,53 +64,40 @@ export const POST: RequestHandler = async ({ request, cookies, locals }) => {
                 members: teamMembers,
                 level: 1,
                 banned: false,
-                gsv_verified: false
+                gsv_verified: false,
+                bonusPoints: 0,
+                scannedQRCodes: []
             };
             if ((userRecord.email || "").endsWith("gsv.ac.in")) {
                 data['gsv_verified'] = true;
             }
+
+            // Writes
             transaction.set(newTeamRef, data);
 
-            let data2 = {
-                team: teamID
-            };
-            transaction.update(userRef, data2);
+            // Reserve the name
+            transaction.set(nameRef, {
+                teamId: teamID,
+                createdAt: FieldValue.serverTimestamp()
+            });
 
-            const teamCodeKey = 'teamcodes.' + teamCode;
-            const teamCountKey = 'teamcounts.' + teamCode;
-            let data3 = {
-                teamnames: FieldValue.arrayUnion(teamName)
-            };
-            data3[teamCodeKey] = teamID;
-            data3[teamCountKey] = [locals.userID,];
+            // Update User
+            transaction.update(userRef, { team: teamID });
 
-            transaction.set(indexRef, data3, { merge: true });
-
-            let data4 = {};
-            data4[locals.userID] = teamID
-            transaction.set(userIndexRef, data4, { merge: true });
-
-            // Update local cache
-            if (existingTeamCodes) {
-                existingTeamCodes[teamCode] = teamID;
-            }
-            existingTeamNames.add(teamName);
+            // NO UPDATES TO 'nameIndex' or 'userIndex'
         });
 
-        // Webhook
+        // Webhook (Fire and Forget)
         try {
-            // Count query might fail if permissions/index issue, but shouldn't crash request
-            let teamcount = 0;
-            try {
-                const countSnapshot = await adminDB.collection('teams').count().get();
-                teamcount = countSnapshot.data().count;
-            } catch (err) {
-                console.warn("Failed to get team count", err);
+            if (process.env.WEBHOOK) {
+                // Get count - might be slow if collection is huge, but aggregated count is okay-ish to read occasionally
+                // or just skip count for performance? User wanted optimization.
+                // let's skip count or use a cached counter if we had one.
+                // For now, just say "New Team".
+                await axios.post(process.env.WEBHOOK, {
+                    "content": `**New Team Created**\nName: ${teamName}`
+                });
             }
-
-            if (process.env.WEBHOOK) await axios.post(process.env.WEBHOOK, {
-                "content": "**New Team**\nName: " + teamName + "\nTeam Count: " + teamcount
-            });
         } catch (webhookError) {
             console.error("Webhook error:", webhookError);
         }
@@ -130,10 +105,13 @@ export const POST: RequestHandler = async ({ request, cookies, locals }) => {
         return json({ success: true });
 
     } catch (e: any) {
-        // Safe logging
-        console.error("Team Creation Error Stack:", e?.stack);
-        console.error("Team Creation Error Message:", e?.message);
-        return error(500, `Internal Server Error: ${e?.message || "Unknown error"}`);
+        console.error("Team Creation Error:", e.message);
+        if (e.message === "Team name is already taken") {
+            return error(429, "Team name is already taken");
+        }
+        if (e.message.includes("Collision")) {
+            return error(409, "System busy, please try again");
+        }
+        return error(500, `Internal Server Error: ${e.message}`);
     }
 };
-

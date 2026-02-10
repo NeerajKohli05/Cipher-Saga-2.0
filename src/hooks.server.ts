@@ -1,9 +1,9 @@
-import {sequence} from "@sveltejs/kit/hooks";
+import { sequence } from "@sveltejs/kit/hooks";
 import * as Sentry from "@sentry/sveltekit";
 import { adminAuth, adminDB } from "$lib/server/admin";
 import { FieldValue } from "firebase-admin/firestore";
 import type { Handle } from "@sveltejs/kit";
-import {PUBLIC_SENTRY_DSN} from '$env/static/public';
+import { PUBLIC_SENTRY_DSN } from '$env/static/public';
 Sentry.init({
     dsn: PUBLIC_SENTRY_DSN,
     tracesSampleRate: 1
@@ -13,26 +13,26 @@ let createdUserDataIndex = new Map<string, string>();
 let bannedTeams = new Set<string>();
 let indexLoaded = false;
 const indexRef = adminDB.collection("index").doc('userIndex');
-const bannedTeamsQuery = adminDB.collection("teams").where("banned","==",true);
+const bannedTeamsQuery = adminDB.collection("teams").where("banned", "==", true);
 export const handle = sequence(Sentry.sentryHandle(), (async ({ event, resolve }) => {
     const sessionCookie = event.cookies.get("__session");
     if (!indexLoaded) {
         const doc = await indexRef.get();
         const qSnap = await bannedTeamsQuery.get();
-        qSnap.docs.forEach((e)=>bannedTeams.add(e.id));
+        qSnap.docs.forEach((e) => bannedTeams.add(e.id));
         if (doc.exists) {
             const data = doc.data();
             if (data !== undefined) {
                 createdUserDataIndex = new Map<string, string>(Object.entries(data));
             }
         }
-        indexRef.onSnapshot((snap)=>{
+        indexRef.onSnapshot((snap) => {
             const snapData = snap.data();
-            if(snapData!== undefined) createdUserDataIndex = new Map<string,string>(Object.entries(snapData));
+            if (snapData !== undefined) createdUserDataIndex = new Map<string, string>(Object.entries(snapData));
         });
         bannedTeamsQuery.onSnapshot((snap) => {
             bannedTeams.clear();
-            snap.docs.forEach((e)=>bannedTeams.add(e.id));
+            snap.docs.forEach((e) => bannedTeams.add(e.id));
         });
         indexLoaded = true;
     }
@@ -48,8 +48,8 @@ export const handle = sequence(Sentry.sentryHandle(), (async ({ event, resolve }
         event.locals.userID = decodedClaims.uid;
         if (createdUserDataIndex.has(event.locals.userID)) {
             event.locals.userExists = true;
-            event.locals.userTeam = createdUserDataIndex.get(event.locals.userID);
-            event.locals.banned = bannedTeams.has(event.locals.userTeam);
+            event.locals.userTeam = createdUserDataIndex.get(event.locals.userID) || null;
+            event.locals.banned = event.locals.userTeam ? bannedTeams.has(event.locals.userTeam) : false;
 
             return resolve(event);
         } else {

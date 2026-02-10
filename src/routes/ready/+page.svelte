@@ -36,7 +36,7 @@
         DONE,
     }
 
-    const getAccountStateFromStatCode = (loc) => {
+    const getAccountStateFromStatCode = (loc: any) => {
         const code: number =
             (loc.userID === null ? 0 : 1) +
             (loc.userExists === false ? 0 : 1) +
@@ -166,6 +166,14 @@
                 console.log("Something went wrong");
         }
         loading = false;
+    }
+
+    function showModal(id: string) {
+        (document.getElementById(id) as HTMLDialogElement)?.showModal();
+    }
+
+    function closeModal(id: string) {
+        (document.getElementById(id) as HTMLDialogElement)?.close();
     }
 
     async function updateNameUsername() {
@@ -384,16 +392,14 @@
         </p>
         <button
             class="relative btn btn-accent btn-wide z-20"
-            on:click={() =>
-                document.getElementById("create_team_modal").showModal()}
+            on:click={() => showModal("create_team_modal")}
         >
             Create team
         </button>
 
         <button
             class="relative btn btn-secondary btn-wide z-20"
-            on:click={() =>
-                document.getElementById("join_team_modal").showModal()}
+            on:click={() => showModal("join_team_modal")}
         >
             Join team
         </button>
@@ -450,7 +456,7 @@
             class="btn btn-accent btn-wide mt-4"
             on:click={async () => {
                 await createTeam();
-                document.getElementById("create_team_modal").close();
+                closeModal("create_team_modal");
             }}
             disabled={loading}
             >{#if loading}<span
@@ -483,7 +489,7 @@
             class="btn btn-secondary btn-wide mt-4"
             on:click={async () => {
                 await joinTeam();
-                document.getElementById("join_team_modal").close();
+                closeModal("join_team_modal");
             }}
             disabled={loading}
             >{#if loading}<span

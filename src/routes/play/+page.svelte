@@ -33,7 +33,7 @@
             method: "POST",
             body: JSON.stringify({
                 answer,
-                userId: data.locals.userId,
+                userId: data.locals.userID,
                 questionId: currQuestionData.uid,
             }),
         });
@@ -55,13 +55,30 @@
         if (currQuestionData === null || currQuestionData === undefined) return;
         if (browser) {
             const e = document.getElementById(";)");
-            e.innerHTML = "";
-            e.appendChild(document.createComment(currQuestionData.comment));
+            if (e) {
+                e.innerHTML = "";
+                e.appendChild(document.createComment(currQuestionData.comment));
+            }
         }
+    };
+
+    const handleInput = (e: Event) => {
+        const target = e.target as HTMLInputElement;
+        if (target) {
+            answer = target.value.replace(/[^a-z]/g, "");
+            target.value = answer;
+        }
+    };
+
+    const showLogsModal = () => {
+        (
+            document.getElementById("logsModal") as HTMLDialogElement
+        )?.showModal();
     };
 
     $: currQuestionData, updateComment();
 </script>
+
 <title>Cipher Saga 2.0 - Play</title>
 {#if questions.length > 0}
     <Doc ref={`/teams/${data.locals.userTeam}`} let:data={teamData}>
@@ -113,11 +130,7 @@
                 <Coin />
                 {(teamData.level || 1) * 100 - 100}
             </button>
-            <button
-                class="btn btn-ghost"
-                on:click={() =>
-                    document.getElementById("logsModal").showModal()}
-            >
+            <button class="btn btn-ghost" on:click={showLogsModal}>
                 <List />
                 Prev Answers
             </button>
@@ -153,10 +166,7 @@
                         id="answer"
                         placeholder="..."
                         type="text"
-                        onInput={(e) => {
-                            answer = e.target.value.replace(/[^a-z]/g, "");
-                            e.target.value = answer;
-                        }}
+                        on:input={handleInput}
                     />
                 </div>
                 <button

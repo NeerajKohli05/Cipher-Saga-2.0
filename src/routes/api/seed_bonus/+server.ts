@@ -21,7 +21,7 @@ export const GET = async () => {
             message: "Seeded! Now go to /bonus and scan a QR code with content: 'bonus_test_01'",
             qrCode: bonusId
         });
-    } catch (e) {
+    } catch (e: any) {
         return json({ error: e.message }, { status: 500 });
     }
 };
