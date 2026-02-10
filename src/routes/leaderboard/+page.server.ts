@@ -2,11 +2,12 @@
 import { adminDB } from "@/server/admin";
 let loaded = false;
 let leaderboard: any[] = [];
-let queryDef = adminDB.collection("teams").orderBy("level", "desc").orderBy("last_change");
+
 
 export const load = async ({ params, locals }: any) => {
     try {
         if (!loaded) {
+            const queryDef = adminDB.collection("teams").orderBy("level", "desc").orderBy("last_change");
             const qSnap = await queryDef.get();
             qSnap.docs.forEach((e) => {
                 const data = e.data() || {};
